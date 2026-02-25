@@ -16,8 +16,15 @@ load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-# Ссылка на админа (Вопрос менеджеру / Поддержка). По умолчанию — открыть чат с админом по ID
-MANAGER_LINK = os.getenv("MANAGER_LINK") or "tg://user?id=6933111964"
+# Ссылка на админа (Вопрос менеджеру / Поддержка).
+# ВАЖНО: tg://user?id=... в inline‑кнопках часто даёт ошибку BUTTON_USER_INVALID,
+# поэтому здесь используем обычную https‑ссылку.
+_raw_manager = (os.getenv("MANAGER_LINK") or "").strip()
+if _raw_manager.startswith("tg://"):
+    # fallback, если в .env оставили tg://
+    MANAGER_LINK = "https://t.me/n_deniseva"
+else:
+    MANAGER_LINK = _raw_manager or "https://t.me/n_deniseva"
 
 # Захардкоженные ссылки в приветствии (не редактируются в админке)
 WELCOME_LINKS_HTML = """• <a href="https://psyprosto-help.by/policy">Политика конфиденциальности</a>
