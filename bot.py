@@ -127,8 +127,13 @@ async def check_recurring_payments():
 
             for user in users_due:
                 user_id, card_token, email = user
+
+                # Никогда не трогаем админов (из .env и из БД)
+                if await is_admin(user_id):
+                    continue
                 
-                if not card_token: continue
+                if not card_token:
+                    continue
                 
                 logger.info(f"Attempting to charge user {user_id}")
                 
@@ -223,14 +228,35 @@ async def start_payment(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "cancel_subscription")
 async def process_cancel_sub(callback: types.CallbackQuery):
-    # Тут можно добавить логику отмены автосписания (удалить card_token)
     user_id = callback.from_user.id
     
-    # Удаляем токен карты из БД, чтобы списаний больше не было
-    await db.set_subscription(user_id, status=False, card_token=None)
+    # Удаляем токен карты из БД (передаем пустую строку или NULL, но в логике set_subscription
+    # card_token=None не обновляет поле, поэтому передаем пустую строку, если хотим стереть.
+    # Но подожди, в bePaid токен reusable.
+    # Главное - поставить subscription_active=0.
     
+    # Важно: если человек отменяет подписку САМ, он досиживает оплаченный период?
+    # Обычно ДА. Поэтому просто убираем автопродление (card_token=NULL) и не трогаем active/end_date?
+    # Но в ТЗ "отмена подписки". Обычно это "отменить автосписание".
+    
+    # Реализуем "Отменить автосписание":
+    # Для этого просто затрем card_token в БД.
+    
+    # ПРАВКА БД для очистки токена:
+    # В set_subscription сейчас: if card_token is not None -> update.
+    # Передадим пустую строку.
+    
+    await db.set_subscription(user_id, status=True, card_token="") # Оставляем активной, но без токена
+    
+    # Если нужно мгновенно выгнать:
+    # await db.set_subscription(user_id, status=False, card_token="")
+    # try:
+    #    await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+    #    await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+    # except: pass
+
     cancel_text = await db.get_setting("cancel_text")
-    await callback.message.answer(cancel_text + "\n\n✅ Автопродление отключено.", parse_mode="HTML")
+    await callback.message.answer(cancel_text + "\n\n✅ Автопродление отключено. Вы останетесь в канале до конца оплаченного периода.", parse_mode="HTML")
     await callback.answer()
 
 # --- Admin Handlers (Оставил основные, добавил цену) ---
