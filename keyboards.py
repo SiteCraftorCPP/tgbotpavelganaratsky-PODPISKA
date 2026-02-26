@@ -12,7 +12,7 @@ def get_welcome_keyboard():
 def get_subscription_keyboard(manager_link: str):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         # Placeholder for payment
-        [InlineKeyboardButton(text="💳 Оформить подписку (Тест)", callback_data="simulate_payment")],
+        [InlineKeyboardButton(text="💳 Оформить подписку", callback_data="simulate_payment")],
         
         [InlineKeyboardButton(text="👤 Вопрос менеджеру", url=manager_link)]
     ])
