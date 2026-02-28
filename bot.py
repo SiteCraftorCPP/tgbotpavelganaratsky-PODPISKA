@@ -216,7 +216,7 @@ async def start_payment(callback: types.CallbackQuery):
         order_id=order_id,
         email=email,
         notification_url=f"{WEBHOOK_HOST}{WEBHOOK_PATH}",
-        return_url="https://t.me/testKWORKhitrstudent_bot" # Ссылка на возврат в бота
+        return_url=os.getenv("BOT_LINK") or "https://t.me/n_deniseva_bot"
     )
     
     if payment_url:

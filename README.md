@@ -19,6 +19,8 @@ python bot.py
 BOT_TOKEN=...
 ADMIN_IDS=6933111964,783321437,6804220900
 CHANNEL_ID=-1003721182699
-MANAGER_LINK=tg://user?id=6933111964
+MANAGER_LINK=https://t.me/nastyaprostozhit
+BOT_LINK=https://t.me/n_deniseva_bot
 ```
+(BOT_LINK — куда возвращать пользователя после оплаты на bePaid.)
 
