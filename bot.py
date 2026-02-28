@@ -21,6 +21,7 @@ _env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(_env_path)
 
 TOKEN = os.getenv("BOT_TOKEN")
+# Единственный канал: сюда выдаём инвайты после оплаты и отсюда кикаем при неуплате (кроме админов)
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 if CHANNEL_ID is not None:
     CHANNEL_ID = CHANNEL_ID.strip()
@@ -91,7 +92,7 @@ async def bepaid_webhook_handler(request):
                 
                 await db.set_subscription(user_id, status=True, end_date=new_end_date, card_token=card_token)
                 
-                # Отправляем пользователю ссылку
+                # Инвайт только в канал из CHANNEL_ID (.env)
                 invite_link_obj = await bot.create_chat_invite_link(
                     chat_id=CHANNEL_ID,
                     member_limit=1,
@@ -157,7 +158,7 @@ async def check_recurring_payments():
                 else:
                     await db.set_subscription(user_id, status=False)
                     await bot.send_message(user_id, f"❌ Не удалось продлить подписку: {result}. Пожалуйста, оплатите вручную.")
-                    # Пытаемся выгнать из канала
+                    # Кик из того же канала CHANNEL_ID (.env); админов мы уже пропустили выше
                     try:
                         await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
                         await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
@@ -371,7 +372,7 @@ async def main():
     if not CHANNEL_ID:
         logger.critical("CHANNEL_ID не задан в .env. Проверьте файл .env в папке с ботом.")
         raise SystemExit(1)
-    logger.info(f"Используется канал: CHANNEL_ID={CHANNEL_ID}")
+    logger.info(f"Канал для инвайтов и кика (один и тот же): CHANNEL_ID={CHANNEL_ID}")
 
     await db.init_db()
     
