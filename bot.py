@@ -2,6 +2,7 @@ import logging
 import asyncio
 import os
 import time
+from pathlib import Path
 from aiohttp import web
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
@@ -15,11 +16,14 @@ import database as db
 import keyboards as kb
 from bepaid_api import BePaidAPI
 
-# Load environment variables
-load_dotenv()
+# Загружаем .env из папки, где лежит bot.py (важно для systemd: не зависим от текущей директории)
+_env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(_env_path)
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+if CHANNEL_ID is not None:
+    CHANNEL_ID = CHANNEL_ID.strip()
 MANAGER_LINK = (os.getenv("MANAGER_LINK") or "https://t.me/nastyaprostozhit").strip()
 
 BEPAID_SHOP_ID = os.getenv("BEPAID_SHOP_ID")
@@ -364,6 +368,11 @@ async def cancel_handler(callback: types.CallbackQuery, state: FSMContext):
 
 # --- Main ---
 async def main():
+    if not CHANNEL_ID:
+        logger.critical("CHANNEL_ID не задан в .env. Проверьте файл .env в папке с ботом.")
+        raise SystemExit(1)
+    logger.info(f"Используется канал: CHANNEL_ID={CHANNEL_ID}")
+
     await db.init_db()
     
     # Создаем aiohttp приложение для вебхуков
