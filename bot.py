@@ -55,7 +55,6 @@ class AdminStates(StatesGroup):
     waiting_for_broadcast = State()
     waiting_for_welcome_text = State()
     waiting_for_welcome_photo = State()
-    waiting_for_cancel_text = State()
     waiting_for_payment_text = State()
     waiting_for_price = State()
 
@@ -252,36 +251,48 @@ async def start_payment(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "cancel_subscription")
 async def process_cancel_sub(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    
-    # Удаляем токен карты из БД (передаем пустую строку или NULL, но в логике set_subscription
-    # card_token=None не обновляет поле, поэтому передаем пустую строку, если хотим стереть.
-    # Но подожди, в bePaid токен reusable.
-    # Главное - поставить subscription_active=0.
-    
-    # Важно: если человек отменяет подписку САМ, он досиживает оплаченный период?
-    # Обычно ДА. Поэтому просто убираем автопродление (card_token=NULL) и не трогаем active/end_date?
-    # Но в ТЗ "отмена подписки". Обычно это "отменить автосписание".
-    
-    # Реализуем "Отменить автосписание":
-    # Для этого просто затрем card_token в БД.
-    
-    # ПРАВКА БД для очистки токена:
-    # В set_subscription сейчас: if card_token is not None -> update.
-    # Передадим пустую строку.
-    
-    await db.set_subscription(user_id, status=True, card_token="") # Оставляем активной, но без токена
-    
-    # Если нужно мгновенно выгнать:
-    # await db.set_subscription(user_id, status=False, card_token="")
-    # try:
-    #    await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-    #    await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-    # except: pass
-
-    cancel_text = await db.get_setting("cancel_text")
-    await callback.message.answer(cancel_text + "\n\n✅ Автопродление отключено. Вы останетесь в канале до конца оплаченного периода.", parse_mode="HTML")
+    """Показать подтверждение: Отменить подписку? Да / Нет."""
+    await callback.message.answer(
+        "Отменить подписку?\n\n"
+        "С вашей карты больше не будет списываться оплата. Вы будете удалены из канала.",
+        reply_markup=kb.get_cancel_subscription_confirm_keyboard(),
+    )
     await callback.answer()
+
+
+@dp.callback_query(F.data == "cancel_subscription_confirm")
+async def process_cancel_sub_confirm(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    await db.set_subscription(user_id, status=False, card_token="")
+    logger.info(
+        "Subscription cancelled by user: user_id=%s, token_removed=yes, auto_charge_disabled=yes, will_kick_from_channel",
+        user_id,
+    )
+    try:
+        await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        logger.info("User user_id=%s kicked from channel after subscription cancel", user_id)
+    except Exception as e:
+        logger.error("Failed to kick user_id=%s from channel: %s", user_id, e)
+    try:
+        await callback.message.edit_text(
+            "✅ Подписка отменена. С вашей карты больше не будет списываться оплата. Вы удалены из канала."
+        )
+    except Exception:
+        await callback.message.answer(
+            "✅ Подписка отменена. С вашей карты больше не будет списываться оплата. Вы удалены из канала."
+        )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "cancel_subscription_abort")
+async def process_cancel_sub_abort(callback: types.CallbackQuery):
+    try:
+        await callback.message.edit_text("Действие отменено.")
+    except Exception:
+        await callback.message.answer("Действие отменено.")
+    await callback.answer()
+
 
 # --- Admin Handlers (Оставил основные, добавил цену) ---
 
@@ -346,20 +357,6 @@ async def admin_save_welcome_photo(message: types.Message, state: FSMContext):
     photo_id = message.photo[-1].file_id
     await db.set_setting("welcome_photo", photo_id)
     await message.answer("✅ Фото приветствия обновлено.")
-    await state.clear()
-    await message.answer("🔧 Админ-панель:", reply_markup=kb.get_admin_keyboard())
-
-@dp.callback_query(F.data == "admin_edit_cancel_text")
-async def admin_edit_cancel_text(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_admin(callback.from_user.id): return
-    await state.set_state(AdminStates.waiting_for_cancel_text)
-    await callback.message.answer("Введите новый текст инструкции по отмене подписки:", reply_markup=kb.get_cancel_keyboard())
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_for_cancel_text)
-async def admin_save_cancel_text(message: types.Message, state: FSMContext):
-    await db.set_setting("cancel_text", message.text)
-    await message.answer("✅ Текст отмены подписки обновлен.")
     await state.clear()
     await message.answer("🔧 Админ-панель:", reply_markup=kb.get_admin_keyboard())
 

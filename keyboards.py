@@ -27,10 +27,21 @@ def get_member_keyboard(manager_link: str, invite_link: str = None):
         buttons.append([InlineKeyboardButton(text="🔗 Вступить в канал", url=invite_link)])
     
     buttons.append([InlineKeyboardButton(text="🆘 Поддержка", url=manager_link)])
-    buttons.append([InlineKeyboardButton(text="❌ Как отменить подписку", callback_data="cancel_subscription")])
+    buttons.append([InlineKeyboardButton(text="❌ Отменить подписку", callback_data="cancel_subscription")])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     return keyboard
+
+
+def get_cancel_subscription_confirm_keyboard():
+    """Инлайн-кнопки Да/Нет для подтверждения отмены подписки."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Да", callback_data="cancel_subscription_confirm"),
+            InlineKeyboardButton(text="Нет", callback_data="cancel_subscription_abort"),
+        ]
+    ])
+
 
 # --- Admin Keyboards ---
 def get_admin_keyboard():
@@ -38,7 +49,6 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="📝 Изм. приветствие (Текст)", callback_data="admin_edit_welcome_text")],
         [InlineKeyboardButton(text="🖼 Изм. приветствие (Фото)", callback_data="admin_edit_welcome_photo")],
-        [InlineKeyboardButton(text="📝 Изм. текст отмены подписки", callback_data="admin_edit_cancel_text")],
         [InlineKeyboardButton(text="📝 Изм. текст после оплаты", callback_data="admin_edit_payment_text")]
     ])
     return keyboard
