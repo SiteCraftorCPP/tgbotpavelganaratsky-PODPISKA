@@ -218,13 +218,34 @@ async def process_agreement(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "simulate_payment")
 async def start_payment(callback: types.CallbackQuery):
-    # Теперь это РЕАЛЬНАЯ оплата
     user_id = callback.from_user.id
-    
+
+    # Админ пропускает оплату — сразу выдаём блок подписчика (инвайт + кнопки)
+    if await is_admin(user_id):
+        days_str = await db.get_setting("subscription_days") or "30"
+        days = int(days_str)
+        new_end_date = time.time() + (days * 24 * 60 * 60)
+        await db.set_subscription(user_id, status=True, end_date=new_end_date)
+        try:
+            invite_link_obj = await bot.create_chat_invite_link(
+                chat_id=CHANNEL_ID,
+                member_limit=1,
+                name=f"Admin_{user_id}_{int(time.time())}"
+            )
+            invite_link = invite_link_obj.invite_link
+        except Exception as e:
+            logger.warning("Admin bypass: could not create invite link: %s", e)
+            invite_link = None
+        payment_text = await db.get_setting("payment_success_text") or "✅ Оплата прошла успешно!\n\nНажмите кнопку ниже, чтобы вступить в канал."
+        await callback.message.answer(
+            f"✅ [Админ] Доступ открыт без оплаты.\n\n{payment_text}" if invite_link else "✅ [Админ] Доступ открыт. Ссылка на канал не создана (проверьте права бота).",
+            reply_markup=kb.get_member_keyboard(MANAGER_LINK, invite_link=invite_link or "")
+        )
+        await callback.answer()
+        return
+
     price_str = await db.get_setting("subscription_price") or "10"
     price = float(price_str)
-    
-    # Генерируем ссылку на оплату
     order_id = f"{user_id}:{int(time.time())}"
     email = f"user{user_id}@telegram.bot" # Заглушка, т.к. мы не знаем email
     
