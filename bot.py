@@ -286,23 +286,29 @@ async def process_cancel_sub_confirm(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     await db.set_subscription(user_id, status=False, card_token="")
     logger.info(
-        "Subscription cancelled by user: user_id=%s, token_removed=yes, auto_charge_disabled=yes, will_kick_from_channel",
+        "Subscription cancelled by user: user_id=%s, token_removed=yes, auto_charge_disabled=yes, kick_attempt=now",
         user_id,
     )
+    kicked = False
     try:
         await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        logger.info("User user_id=%s kicked from channel after subscription cancel", user_id)
+        kicked = True
+        logger.info("User user_id=%s kicked from channel after subscription cancel (immediate)", user_id)
     except Exception as e:
-        logger.error("Failed to kick user_id=%s from channel: %s", user_id, e)
+        logger.error("Failed to kick user_id=%s from channel: %s (e.g. user is channel admin)", user_id, e)
+    if kicked:
+        msg = "✅ Подписка отменена. С вашей карты больше не будет списываться оплата. Вы удалены из канала."
+    else:
+        msg = (
+            "✅ Подписка отменена. С вашей карты больше не будет списываться оплата.\n\n"
+            "Удалить вас из канала не удалось: в Telegram бот не может исключить администратора канала. "
+            "Для проверки исключения зайдите в канал с аккаунта без прав админа."
+        )
     try:
-        await callback.message.edit_text(
-            "✅ Подписка отменена. С вашей карты больше не будет списываться оплата. Вы удалены из канала."
-        )
+        await callback.message.edit_text(msg)
     except Exception:
-        await callback.message.answer(
-            "✅ Подписка отменена. С вашей карты больше не будет списываться оплата. Вы удалены из канала."
-        )
+        await callback.message.answer(msg)
     await callback.answer()
 
 
