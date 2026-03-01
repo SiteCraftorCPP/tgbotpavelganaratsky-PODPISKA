@@ -125,22 +125,31 @@ async def get_user_subscription(user_id):
             return await cursor.fetchone()
 
 async def get_users_due_payment():
-    """Возвращает пользователей, у которых заканчивается подписка (например, сегодня) и есть токен карты"""
+    """Пользователи с истёкшей подпиской и привязанной картой (пробуем автосписание)."""
     async with aiosqlite.connect(DB_NAME) as db:
-        # Простая логика: ищем тех, у кого активна подписка и дата окончания <= сейчас
-        # В реальном проекте лучше списывать за несколько часов ДО или ровно В срок
         now = time.time()
-        # SQLite хранит timestamp или string, предположим мы пишем timestamp (float/int)
-        # Если храним как строку ISO, запрос будет другим. Будем хранить как Unix Timestamp для простоты.
-        
         async with db.execute("""
             SELECT id, card_token, email 
             FROM users 
             WHERE subscription_active = 1 
               AND card_token IS NOT NULL 
+              AND card_token != ''
               AND subscription_end_date <= ?
         """, (now,)) as cursor:
             return await cursor.fetchall()
+
+
+async def get_users_expired_no_card():
+    """Пользователи с истёкшей подпиской без карты — только выгнать, списывать нечего."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        now = time.time()
+        async with db.execute("""
+            SELECT id FROM users 
+            WHERE subscription_active = 1 
+              AND subscription_end_date <= ?
+              AND (card_token IS NULL OR card_token = '')
+        """, (now,)) as cursor:
+            return [row[0] for row in await cursor.fetchall()]
 
 async def get_users():
     async with aiosqlite.connect(DB_NAME) as db:

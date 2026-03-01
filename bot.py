@@ -2,6 +2,7 @@ import logging
 import asyncio
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from aiohttp import web
 from dotenv import load_dotenv
@@ -91,6 +92,11 @@ async def bepaid_webhook_handler(request):
                 new_end_date = time.time() + (days * 24 * 60 * 60)
                 
                 await db.set_subscription(user_id, status=True, end_date=new_end_date, card_token=card_token)
+                end_date_str = datetime.utcfromtimestamp(new_end_date).strftime("%Y-%m-%d %H:%M UTC")
+                logger.info(
+                    f"Payment OK: user_id={user_id}, card_saved={'yes' if card_token else 'no'}, "
+                    f"subscription_until={end_date_str}, auto_renew={'yes' if card_token else 'no'}"
+                )
                 
                 # Инвайт только в канал из CHANNEL_ID (.env)
                 invite_link_obj = await bot.create_chat_invite_link(
@@ -165,6 +171,19 @@ async def check_recurring_payments():
                         logger.info(f"Kicked user {user_id} due to payment failure")
                     except Exception as k_err:
                          logger.error(f"Failed to kick user {user_id}: {k_err}")
+
+            # Истёкшая подписка без карты — просто выгоняем (админов не трогаем)
+            expired_no_card = await db.get_users_expired_no_card()
+            for user_id in expired_no_card:
+                if await is_admin(user_id):
+                    continue
+                await db.set_subscription(user_id, status=False)
+                try:
+                    await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+                    await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+                    logger.info(f"Kicked user {user_id} (subscription expired, no card)")
+                except Exception as k_err:
+                    logger.error(f"Failed to kick user {user_id}: {k_err}")
                     
             # Проверка раз в час (чтобы не пропустить)
             await asyncio.sleep(3600) 
