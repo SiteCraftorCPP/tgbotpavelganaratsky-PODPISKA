@@ -76,8 +76,10 @@ async def init_db():
         await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_success_text', ?)", ("✅ Оплата прошла успешно!\n\nНажмите кнопку ниже, чтобы вступить в канал.",))
         
         # Настройка цены и периода по умолчанию
-        await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('subscription_price', '10')") # BYN
+        await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('subscription_price', '30')") # BYN
         await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('subscription_days', '30')")
+        # Если раньше была цена 10 BYN и не меняли вручную — обновим до 30
+        await db.execute("UPDATE settings SET value='30' WHERE key='subscription_price' AND value='10'")
         
         await db.commit()
 

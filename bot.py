@@ -210,6 +210,14 @@ async def cmd_start(message: types.Message):
     else:
         await message.answer(text=full_welcome, parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb.get_welcome_keyboard())
 
+    # Админу показываем отдельную кнопку над клавиатурой для входа в админ-панель
+    if await is_admin(user.id):
+        admin_kb = types.ReplyKeyboardMarkup(
+            keyboard=[[types.KeyboardButton(text="Админ-панель")]],
+            resize_keyboard=True
+        )
+        await message.answer("Админ-панель доступна по кнопке ниже.", reply_markup=admin_kb)
+
 @dp.callback_query(F.data == "agreed_to_terms")
 async def process_agreement(callback: types.CallbackQuery):
     await db.set_agreed(callback.from_user.id)
@@ -324,9 +332,11 @@ async def process_cancel_sub_abort(callback: types.CallbackQuery):
 # --- Admin Handlers (Оставил основные, добавил цену) ---
 
 @dp.message(Command("admin"))
+@dp.message(F.text == "Админ-панель")
 async def cmd_admin(message: types.Message):
     user_id = message.from_user.id
-    if not await is_admin(user_id): return
+    if not await is_admin(user_id):
+        return
     await message.answer("🔧 Админ-панель:", reply_markup=kb.get_admin_keyboard())
 
 # ... (остальные хендлеры админки те же, добавлю только один для цены) ...
