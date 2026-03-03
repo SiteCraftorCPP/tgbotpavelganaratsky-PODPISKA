@@ -216,7 +216,7 @@ async def cmd_start(message: types.Message):
             keyboard=[[types.KeyboardButton(text="Админ-панель")]],
             resize_keyboard=True
         )
-        await message.answer("Админ-панель доступна по кнопке ниже.", reply_markup=admin_kb)
+        await message.answer(reply_markup=admin_kb)
 
 @dp.callback_query(F.data == "agreed_to_terms")
 async def process_agreement(callback: types.CallbackQuery):
