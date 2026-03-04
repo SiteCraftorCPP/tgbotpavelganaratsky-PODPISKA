@@ -338,7 +338,16 @@ async def cmd_admin(message: types.Message):
     user_id = message.from_user.id
     if not await is_admin(user_id):
         return
+
+    # Инлайн-меню админа
     await message.answer("🔧 Админ-панель:", reply_markup=kb.get_admin_keyboard())
+
+    # И гарантированно показываем reply-клавиатуру с кнопкой «Админ-панель»
+    admin_kb = types.ReplyKeyboardMarkup(
+        keyboard=[[types.KeyboardButton(text="Админ-панель")]],
+        resize_keyboard=True,
+    )
+    await message.answer("\u200b", reply_markup=admin_kb)
 
 # ... (остальные хендлеры админки те же, добавлю только один для цены) ...
 
