@@ -230,12 +230,6 @@ async def cmd_start(message: types.Message):
         )
         # Отправляем явное сообщение, чтобы клавиатура точно появилась
         await message.answer("🔧 Вы администратор. Меню управления доступно по кнопке ниже.", reply_markup=admin_kb)
-        
-        # Дублируем инлайн-кнопкой на всякий случай
-        inline_kb = types.InlineKeyboardMarkup(
-            inline_keyboard=[[types.InlineKeyboardButton(text="Открыть админ-панель", callback_data="open_admin_panel")]]
-        )
-        await message.answer("Или используйте кнопку в сообщении:", reply_markup=inline_kb)
 
 @dp.callback_query(F.data == "agreed_to_terms")
 async def process_agreement(callback: types.CallbackQuery):
