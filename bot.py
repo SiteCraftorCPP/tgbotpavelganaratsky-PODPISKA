@@ -218,6 +218,11 @@ async def cmd_start(message: types.Message):
         )
         # Отправляем «пустое» сообщение с клавиатурой (юзер текста не увидит)
         await message.answer("\u200b", reply_markup=admin_kb)
+        # И дублируем вход в админку через инлайн-кнопку (если вдруг reply-клавиатура не прорисуется)
+        inline_kb = types.InlineKeyboardMarkup(
+            inline_keyboard=[[types.InlineKeyboardButton(text="Админ-панель", callback_data="open_admin_panel")]]
+        )
+        await message.answer("\u200b", reply_markup=inline_kb)
 
 @dp.callback_query(F.data == "agreed_to_terms")
 async def process_agreement(callback: types.CallbackQuery):
@@ -348,6 +353,24 @@ async def cmd_admin(message: types.Message):
         resize_keyboard=True,
     )
     await message.answer("\u200b", reply_markup=admin_kb)
+
+
+@dp.callback_query(F.data == "open_admin_panel")
+async def open_admin_panel(callback: types.CallbackQuery):
+    """Вход в админку по инлайн-кнопке (для тех, у кого не появлялась reply-клавиатура)."""
+    user_id = callback.from_user.id
+    if not await is_admin(user_id):
+        await callback.answer()
+        return
+
+    # То же поведение, что и у /admin
+    await callback.message.answer("🔧 Админ-панель:", reply_markup=kb.get_admin_keyboard())
+    admin_kb = types.ReplyKeyboardMarkup(
+        keyboard=[[types.KeyboardButton(text="Админ-панель")]],
+        resize_keyboard=True,
+    )
+    await callback.message.answer("\u200b", reply_markup=admin_kb)
+    await callback.answer()
 
 # ... (остальные хендлеры админки те же, добавлю только один для цены) ...
 
