@@ -97,11 +97,15 @@ async def bepaid_webhook_handler(request):
                 credit_card = transaction.get("credit_card", {})
                 card_token = credit_card.get("token")
                 
-                # Продлеваем подписку (например, на 30 дней)
+                # Снимаем возможный бан и продлеваем подписку (например, на 30 дней)
                 days_str = await db.get_setting("subscription_days") or "30"
                 days = int(days_str)
                 new_end_date = time.time() + (days * 24 * 60 * 60)
-                
+                try:
+                    await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+                except Exception as e:
+                    logger.warning("Unban before invite failed for user %s: %s", user_id, e)
+
                 await db.set_subscription(user_id, status=True, end_date=new_end_date, card_token=card_token)
                 end_date_str = datetime.utcfromtimestamp(new_end_date).strftime("%Y-%m-%d %H:%M UTC")
                 logger.info(
@@ -175,10 +179,9 @@ async def check_recurring_payments():
                 else:
                     await db.set_subscription(user_id, status=False)
                     await bot.send_message(user_id, f"❌ Не удалось продлить подписку: {result}. Пожалуйста, оплатите вручную.")
-                    # Кик из того же канала CHANNEL_ID (.env); админов мы уже пропустили выше
+                    # Жёсткий кик из канала; повторное попадание только после новой оплаты
                     try:
                         await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-                        await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
                         logger.info(f"Kicked user {user_id} due to payment failure")
                     except Exception as k_err:
                          logger.error(f"Failed to kick user {user_id}: {k_err}")
@@ -191,7 +194,6 @@ async def check_recurring_payments():
                 await db.set_subscription(user_id, status=False)
                 try:
                     await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-                    await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
                     logger.info(f"Kicked user {user_id} (subscription expired, no card)")
                 except Exception as k_err:
                     logger.error(f"Failed to kick user {user_id}: {k_err}")
@@ -310,22 +312,18 @@ async def process_cancel_sub_confirm(callback: types.CallbackQuery):
         "Subscription cancelled by user: user_id=%s, token_removed=yes, auto_charge_disabled=yes, kick_attempt=now",
         user_id,
     )
-    kicked = False
     try:
         await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        kicked = True
-        logger.info("User user_id=%s kicked from channel after subscription cancel (immediate)", user_id)
+        logger.info("User user_id=%s banned (kicked) from channel after subscription cancel", user_id)
     except Exception as e:
         logger.error("Failed to kick user_id=%s from channel: %s (e.g. user is channel admin)", user_id, e)
-    if kicked:
-        msg = "✅ Подписка отменена. С вашей карты больше не будет списываться оплата. Вы удалены из канала."
-    else:
         msg = (
             "✅ Подписка отменена. С вашей карты больше не будет списываться оплата.\n\n"
-            "Удалить вас из канала не удалось: в Telegram бот не может исключить администратора канала. "
-            "Для проверки исключения зайдите в канал с аккаунта без прав админа."
+            "Удалить вас из канала не удалось (возможно, вы администратор канала). "
+            "Статус уточните у администратора."
         )
+    else:
+        msg = "✅ Подписка отменена. С вашей карты больше не будет списываться оплата. Вы удалены из канала."
     try:
         await callback.message.edit_text(msg)
     except Exception:
@@ -435,9 +433,8 @@ async def cmd_force_kick(message: types.Message):
 
     try:
         await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=uid)
-        await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=uid)
         await db.set_subscription(uid, status=False, card_token="")
-        await message.answer(f"Пользователь {uid} кикнут из канала и подписка отключена.")
+        await message.answer(f"Пользователь {uid} забанен (кикнут) из канала и подписка отключена.")
         logger.info("Force kick by admin: uid=%s", uid)
     except Exception as e:
         await message.answer(f"Не удалось кикнуть {uid}: {e}")
