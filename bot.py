@@ -342,6 +342,35 @@ async def process_cancel_sub_abort(callback: types.CallbackQuery):
     await callback.answer()
 
 
+# --- Debug / Service commands ---
+
+@dp.message(Command("whoami"))
+async def cmd_whoami(message: types.Message):
+    """Отладочная команда: показывает ID пользователя, его статус и данные подписки."""
+    user = message.from_user
+    user_id = user.id
+    isadm = await is_admin(user_id)
+    sub = await db.get_user_subscription(user_id)
+    if sub:
+        active, sub_end_ts, card_token = sub
+        if sub_end_ts:
+            sub_end = datetime.utcfromtimestamp(sub_end_ts).strftime("%Y-%m-%d %H:%M UTC")
+        else:
+            sub_end = "нет"
+        card_saved = "YES" if card_token else "NO"
+    else:
+        active, sub_end, card_saved = "нет записи", "нет", "NO"
+
+    text = (
+        f"Ваш ID: {user_id}\n"
+        f"Админ: {'YES' if isadm else 'NO'}\n"
+        f"Подписка активна: {active}\n"
+        f"Подписка до: {sub_end}\n"
+        f"Карта привязана (для автосписаний): {card_saved}"
+    )
+    await message.answer(text)
+
+
 # --- Admin Handlers (Оставил основные, добавил цену) ---
 
 @dp.message(Command("admin"))
