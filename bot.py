@@ -371,6 +371,79 @@ async def cmd_whoami(message: types.Message):
     await message.answer(text)
 
 
+@dp.message(Command("check_user"))
+async def cmd_check_user(message: types.Message):
+    """
+    /check_user <id>
+    Команда только для админов: посмотреть статус пользователя в канале и его подписку.
+    """
+    if not await is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Использование: /check_user <telegram_id>")
+        return
+
+    uid = int(parts[1])
+
+    # Проверяем подписку в БД
+    sub = await db.get_user_subscription(uid)
+    if sub:
+        active, sub_end_ts, card_token = sub
+        if sub_end_ts:
+            sub_end = datetime.utcfromtimestamp(sub_end_ts).strftime("%Y-%m-%d %H:%M UTC")
+        else:
+            sub_end = "нет"
+        card_saved = "YES" if card_token else "NO"
+    else:
+        active, sub_end, card_saved = "нет записи", "нет", "NO"
+
+    # Проверяем статус в канале
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=uid)
+        status = member.status
+    except Exception as e:
+        status = f"ошибка получения статуса: {e}"
+
+    text = (
+        f"Пользователь ID: {uid}\n"
+        f"Статус в канале: {status}\n"
+        f"Подписка активна: {active}\n"
+        f"Подписка до: {sub_end}\n"
+        f"Карта привязана (для автосписаний): {card_saved}"
+    )
+    await message.answer(text)
+
+
+@dp.message(Command("force_kick"))
+async def cmd_force_kick(message: types.Message):
+    """
+    /force_kick <id>
+    Жёстко кикнуть пользователя из канала по его Telegram ID.
+    Нужна только для отладки/ручного вмешательства.
+    """
+    if not await is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Использование: /force_kick <telegram_id>")
+        return
+
+    uid = int(parts[1])
+
+    try:
+        await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=uid)
+        await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=uid)
+        await db.set_subscription(uid, status=False, card_token="")
+        await message.answer(f"Пользователь {uid} кикнут из канала и подписка отключена.")
+        logger.info("Force kick by admin: uid=%s", uid)
+    except Exception as e:
+        await message.answer(f"Не удалось кикнуть {uid}: {e}")
+        logger.error("Force kick failed for uid=%s: %s", uid, e)
+
+
 # --- Admin Handlers (Оставил основные, добавил цену) ---
 
 @dp.message(Command("admin"))
