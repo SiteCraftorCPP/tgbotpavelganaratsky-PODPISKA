@@ -232,15 +232,41 @@ async def check_recurring_payments():
                 )
                 await db.update_grace_notice_ts(user_id, time.time())
 
-            # Истёкшая подписка без карты — выгоняем только после окончания грейса (админов не трогаем)
-            expired_no_card = await db.get_users_expired_no_card()
-            for user_id in expired_no_card:
+            # Истёкшая подписка без карты: запускаем грейс (если ещё не запускали)
+            expired_no_card_start = await db.get_users_expired_no_card_start_grace()
+            for user_id, email in expired_no_card_start:
+                if await is_admin(user_id):
+                    continue
+                now_ts = time.time()
+                grace_until = now_ts + (3 * 24 * 60 * 60)
+                await db.set_grace_period(
+                    user_id=user_id,
+                    grace_until_ts=grace_until,
+                    fail_ts=now_ts,
+                    notice_ts=now_ts,
+                )
+                retry_kb = types.InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [types.InlineKeyboardButton(text="💳 Оплатить заново", callback_data="pay_again")]
+                    ]
+                )
+                await bot.send_message(
+                    user_id,
+                    "❌ Срок подписки истёк.\n\n"
+                    "У вас есть 3 дня, чтобы оплатить подписку заново по кнопке ниже.\n"
+                    "После 3 дней доступ к каналу будет отключён.",
+                    reply_markup=retry_kb,
+                )
+
+            # Истёкшая подписка без карты — выгоняем после окончания грейса (админов не трогаем)
+            expired_no_card_to_kick = await db.get_users_expired_no_card_to_kick()
+            for user_id in expired_no_card_to_kick:
                 if await is_admin(user_id):
                     continue
                 await db.set_subscription(user_id, status=False)
                 try:
                     await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-                    logger.info(f"Kicked user {user_id} (subscription expired, no card)")
+                    logger.info(f"Kicked user {user_id} (subscription expired, no card, grace ended)")
                 except Exception as k_err:
                     logger.error(f"Failed to kick user {user_id}: {k_err}")
 

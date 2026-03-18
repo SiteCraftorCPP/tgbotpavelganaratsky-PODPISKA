@@ -188,17 +188,40 @@ async def get_users_due_payment():
             return await cursor.fetchall()
 
 
-async def get_users_expired_no_card():
-    """Пользователи с истёкшей подпиской без карты — выгнать, если грейс закончился."""
+async def get_users_expired_no_card_start_grace():
+    """Истёкшая подписка без карты, грейс ещё не запускали — надо запустить грейс и уведомить."""
     async with aiosqlite.connect(DB_NAME) as db:
         now = time.time()
-        async with db.execute("""
-            SELECT id FROM users 
-            WHERE subscription_active = 1 
+        async with db.execute(
+            """
+            SELECT id, email
+            FROM users
+            WHERE subscription_active = 1
               AND subscription_end_date <= ?
               AND (card_token IS NULL OR card_token = '')
-              AND (grace_until_ts IS NULL OR grace_until_ts <= ?)
-        """, (now, now)) as cursor:
+              AND grace_until_ts IS NULL
+            """,
+            (now,),
+        ) as cursor:
+            return await cursor.fetchall()
+
+
+async def get_users_expired_no_card_to_kick():
+    """Истёкшая подписка без карты, грейс закончился — пора отключать доступ (кик)."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        now = time.time()
+        async with db.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE subscription_active = 1
+              AND subscription_end_date <= ?
+              AND (card_token IS NULL OR card_token = '')
+              AND grace_until_ts IS NOT NULL
+              AND grace_until_ts <= ?
+            """,
+            (now, now),
+        ) as cursor:
             return [row[0] for row in await cursor.fetchall()]
 
 
