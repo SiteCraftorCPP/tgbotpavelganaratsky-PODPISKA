@@ -1,6 +1,7 @@
 import aiosqlite
 import os
 import time
+from typing import Optional
 
 DB_NAME = "bot_database.db"
 
@@ -55,6 +56,15 @@ async def init_db():
         except: pass
         try:
             await db.execute("ALTER TABLE users ADD COLUMN email TEXT")
+        except: pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN grace_until_ts REAL")
+        except: pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN last_payment_fail_ts REAL")
+        except: pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN last_payment_fail_notice_ts REAL")
         except: pass
 
 
@@ -115,6 +125,42 @@ async def set_subscription(user_id, status=True, end_date=None, card_token=None)
         await db.execute(query, tuple(params))
         await db.commit()
 
+
+async def set_grace_period(
+    user_id: int,
+    grace_until_ts: float,
+    fail_ts: float,
+    notice_ts: Optional[float],
+):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE users "
+            "SET grace_until_ts = ?, last_payment_fail_ts = ?, last_payment_fail_notice_ts = ? "
+            "WHERE id = ?",
+            (grace_until_ts, fail_ts, notice_ts, user_id),
+        )
+        await db.commit()
+
+
+async def clear_grace_period(user_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE users "
+            "SET grace_until_ts = NULL, last_payment_fail_ts = NULL, last_payment_fail_notice_ts = NULL "
+            "WHERE id = ?",
+            (user_id,),
+        )
+        await db.commit()
+
+
+async def update_grace_notice_ts(user_id: int, notice_ts: float):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE users SET last_payment_fail_notice_ts = ? WHERE id = ?",
+            (notice_ts, user_id),
+        )
+        await db.commit()
+
 async def get_all_active_users():
     """Получить всех пользователей с активной подпиской"""
     async with aiosqlite.connect(DB_NAME) as db:
@@ -131,18 +177,19 @@ async def get_users_due_payment():
     async with aiosqlite.connect(DB_NAME) as db:
         now = time.time()
         async with db.execute("""
-            SELECT id, card_token, email 
+            SELECT id, card_token, email, grace_until_ts, last_payment_fail_notice_ts
             FROM users 
             WHERE subscription_active = 1 
               AND card_token IS NOT NULL 
               AND card_token != ''
               AND subscription_end_date <= ?
-        """, (now,)) as cursor:
+              AND (grace_until_ts IS NULL OR grace_until_ts <= ?)
+        """, (now, now)) as cursor:
             return await cursor.fetchall()
 
 
 async def get_users_expired_no_card():
-    """Пользователи с истёкшей подпиской без карты — только выгнать, списывать нечего."""
+    """Пользователи с истёкшей подпиской без карты — выгнать, если грейс закончился."""
     async with aiosqlite.connect(DB_NAME) as db:
         now = time.time()
         async with db.execute("""
@@ -150,8 +197,32 @@ async def get_users_expired_no_card():
             WHERE subscription_active = 1 
               AND subscription_end_date <= ?
               AND (card_token IS NULL OR card_token = '')
-        """, (now,)) as cursor:
+              AND (grace_until_ts IS NULL OR grace_until_ts <= ?)
+        """, (now, now)) as cursor:
             return [row[0] for row in await cursor.fetchall()]
+
+
+async def get_users_in_grace_to_notify():
+    """
+    Пользователи, у которых подписка истекла, но действует грейс-период.
+    Уведомляем максимум раз в 24 часа.
+    """
+    async with aiosqlite.connect(DB_NAME) as db:
+        now = time.time()
+        day_ago = now - 86400
+        async with db.execute(
+            """
+            SELECT id, email, grace_until_ts, last_payment_fail_notice_ts
+            FROM users
+            WHERE subscription_active = 1
+              AND subscription_end_date <= ?
+              AND grace_until_ts IS NOT NULL
+              AND grace_until_ts > ?
+              AND (last_payment_fail_notice_ts IS NULL OR last_payment_fail_notice_ts <= ?)
+            """,
+            (now, now, day_ago),
+        ) as cursor:
+            return await cursor.fetchall()
 
 async def get_users():
     async with aiosqlite.connect(DB_NAME) as db:

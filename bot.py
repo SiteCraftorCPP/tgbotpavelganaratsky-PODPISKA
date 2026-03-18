@@ -106,6 +106,7 @@ async def bepaid_webhook_handler(request):
                 except Exception as e:
                     logger.warning("Unban before invite failed for user %s: %s", user_id, e)
 
+                await db.clear_grace_period(user_id)
                 await db.set_subscription(user_id, status=True, end_date=new_end_date, card_token=card_token)
                 end_date_str = datetime.utcfromtimestamp(new_end_date).strftime("%Y-%m-%d %H:%M UTC")
                 logger.info(
@@ -146,13 +147,13 @@ async def check_recurring_payments():
             # Для теста можно уменьшить
             users_due = await db.get_users_due_payment()
             
-            price_str = await db.get_setting("subscription_price") or "10"
+            price_str = await db.get_setting("subscription_price") or "30"
             price = float(price_str)
             days_str = await db.get_setting("subscription_days") or "30"
             days = int(days_str)
 
             for user in users_due:
-                user_id, card_token, email = user
+                user_id, card_token, email, grace_until_ts, last_notice_ts = user
 
                 # Никогда не трогаем админов (из .env и из БД)
                 if await is_admin(user_id):
@@ -174,19 +175,64 @@ async def check_recurring_payments():
                 
                 if success:
                     new_end_date = time.time() + (days * 24 * 60 * 60)
+                    await db.clear_grace_period(user_id)
                     await db.set_subscription(user_id, status=True, end_date=new_end_date)
                     await bot.send_message(user_id, f"✅ Подписка успешно продлена на {days} дней!")
                 else:
-                    await db.set_subscription(user_id, status=False)
-                    await bot.send_message(user_id, f"❌ Не удалось продлить подписку: {result}. Пожалуйста, оплатите вручную.")
-                    # Жёсткий кик из канала; повторное попадание только после новой оплаты
-                    try:
-                        await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-                        logger.info(f"Kicked user {user_id} due to payment failure")
-                    except Exception as k_err:
-                         logger.error(f"Failed to kick user {user_id}: {k_err}")
+                    now_ts = time.time()
+                    grace_until = now_ts + (3 * 24 * 60 * 60)
 
-            # Истёкшая подписка без карты — просто выгоняем (админов не трогаем)
+                    # Отключаем автосписание по токену (чтобы не долбить карту) и включаем грейс 3 дня
+                    await db.set_subscription(user_id, status=True, card_token="")
+                    await db.set_grace_period(
+                        user_id=user_id,
+                        grace_until_ts=grace_until,
+                        fail_ts=now_ts,
+                        notice_ts=now_ts,
+                    )
+
+                    logger.info(
+                        "Payment failed, grace started: user_id=%s, grace_until=%s, reason=%s",
+                        user_id,
+                        datetime.utcfromtimestamp(grace_until).strftime("%Y-%m-%d %H:%M UTC"),
+                        result,
+                    )
+
+                    # Сообщаем и предлагаем оплатить заново по кнопке (с актуальной суммой)
+                    retry_kb = types.InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [types.InlineKeyboardButton(text="💳 Оплатить заново", callback_data="pay_again")]
+                        ]
+                    )
+                    await bot.send_message(
+                        user_id,
+                        "❌ Автосписание не прошло.\n\n"
+                        "У вас есть 3 дня, чтобы пополнить карту или оплатить заново по кнопке ниже.\n"
+                        "После 3 дней доступ к каналу будет отключён.",
+                        reply_markup=retry_kb,
+                    )
+
+            # Уведомления в грейс-период (раз в 24 часа)
+            users_in_grace = await db.get_users_in_grace_to_notify()
+            for row in users_in_grace:
+                user_id, email, grace_until_ts, last_notice_ts = row
+                if await is_admin(user_id):
+                    continue
+                retry_kb = types.InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [types.InlineKeyboardButton(text="💳 Оплатить заново", callback_data="pay_again")]
+                    ]
+                )
+                await bot.send_message(
+                    user_id,
+                    "⏳ Напоминание: оплата подписки не прошла.\n\n"
+                    "Пополните карту или оплатите заново по кнопке ниже.\n"
+                    "Иначе доступ к каналу будет отключён по окончании 3 дней.",
+                    reply_markup=retry_kb,
+                )
+                await db.update_grace_notice_ts(user_id, time.time())
+
+            # Истёкшая подписка без карты — выгоняем только после окончания грейса (админов не трогаем)
             expired_no_card = await db.get_users_expired_no_card()
             for user_id in expired_no_card:
                 if await is_admin(user_id):
@@ -197,12 +243,47 @@ async def check_recurring_payments():
                     logger.info(f"Kicked user {user_id} (subscription expired, no card)")
                 except Exception as k_err:
                     logger.error(f"Failed to kick user {user_id}: {k_err}")
-                    
+
             # Проверка раз в час (чтобы не пропустить)
             await asyncio.sleep(3600) 
         except Exception as e:
             logger.error(f"Scheduler error: {e}")
             await asyncio.sleep(3600)
+
+
+@dp.callback_query(F.data == "pay_again")
+async def pay_again(callback: types.CallbackQuery):
+    """Сгенерировать новую ссылку на оплату с актуальной суммой подписки."""
+    user_id = callback.from_user.id
+    price_str = await db.get_setting("subscription_price") or "30"
+    try:
+        price = float(price_str)
+    except ValueError:
+        price = 30.0
+
+    order_id = f"{user_id}:{int(time.time())}"
+    email = f"user{user_id}@telegram.bot"
+
+    payment_url = await bepaid.create_checkout_link(
+        amount=price,
+        currency="BYN",
+        description="Подписка на закрытый канал (повторная оплата)",
+        order_id=order_id,
+        email=email,
+        notification_url=f"{WEBHOOK_HOST}{WEBHOOK_PATH}",
+        return_url=os.getenv("BOT_LINK") or "https://t.me/n_deniseva_bot",
+    )
+
+    if not payment_url:
+        await callback.message.answer("❌ Не удалось сформировать ссылку на оплату. Попробуйте позже.")
+        await callback.answer()
+        return
+
+    keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[[types.InlineKeyboardButton(text=f"💳 Оплатить {price} BYN", url=payment_url)]]
+    )
+    await callback.message.answer("Ссылка на оплату сформирована:", reply_markup=keyboard)
+    await callback.answer()
 
 # --- User Handlers ---
 
