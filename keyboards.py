@@ -49,7 +49,8 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="📝 Изм. приветствие (Текст)", callback_data="admin_edit_welcome_text")],
         [InlineKeyboardButton(text="🖼 Изм. приветствие (Фото)", callback_data="admin_edit_welcome_photo")],
-        [InlineKeyboardButton(text="📝 Изм. текст после оплаты", callback_data="admin_edit_payment_text")]
+        [InlineKeyboardButton(text="📝 Изм. текст после оплаты", callback_data="admin_edit_payment_text")],
+        [InlineKeyboardButton(text="💰 Изм. цену подписки", callback_data="admin_edit_price")]
     ])
     return keyboard
 

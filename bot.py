@@ -550,6 +550,38 @@ async def admin_save_payment_text(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("🔧 Админ-панель:", reply_markup=kb.get_admin_keyboard())
 
+
+@dp.callback_query(F.data == "admin_edit_price")
+async def admin_edit_price(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        return
+    current_price = await db.get_setting("subscription_price") or "30"
+    await state.set_state(AdminStates.waiting_for_price)
+    await callback.message.answer(
+        f"Текущая стоимость подписки: {current_price} BYN.\n"
+        f"Введите новую стоимость в BYN (например 30 или 29.9):",
+        reply_markup=kb.get_cancel_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.message(AdminStates.waiting_for_price)
+async def admin_save_price(message: types.Message, state: FSMContext):
+    text = (message.text or "").replace(",", ".").strip()
+    try:
+        price = float(text)
+        if price <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Некорректное значение. Введите положительное число, например 30 или 29.9.")
+        return
+
+    # Сохраняем как строку (например '30' или '29.9')
+    await db.set_setting("subscription_price", str(price))
+    await message.answer(f"✅ Стоимость подписки обновлена: {price} BYN.")
+    await state.clear()
+    await message.answer("🔧 Админ-панель:", reply_markup=kb.get_admin_keyboard())
+
 @dp.callback_query(F.data == "cancel_action")
 async def cancel_handler(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
