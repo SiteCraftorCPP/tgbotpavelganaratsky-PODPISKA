@@ -103,7 +103,7 @@ async def set_agreed(user_id):
         await db.execute("UPDATE users SET agreed_to_terms = 1 WHERE id = ?", (user_id,))
         await db.commit()
 
-async def set_subscription(user_id, status=True, end_date=None, card_token=None):
+async def set_subscription(user_id, status=True, end_date=None, card_token=None, email=None):
     async with aiosqlite.connect(DB_NAME) as db:
         query = "UPDATE users SET subscription_active = ?"
         params = [1 if status else 0]
@@ -114,10 +114,13 @@ async def set_subscription(user_id, status=True, end_date=None, card_token=None)
         
         # Если передан card_token=None, не обновляем его (чтобы не затереть).
         # Если передан "", значит хотим стереть (например, при отмене).
-        # Но в текущей логике лучше так:
         if card_token is not None:
              query += ", card_token = ?"
              params.append(card_token)
+
+        if email is not None:
+            query += ", email = ?"
+            params.append(email)
             
         query += " WHERE id = ?"
         params.append(user_id)

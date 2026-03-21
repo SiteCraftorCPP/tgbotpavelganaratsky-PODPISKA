@@ -30,6 +30,8 @@ MANAGER_LINK = (os.getenv("MANAGER_LINK") or "https://t.me/nastyaprostozhit").st
 
 BEPAID_SHOP_ID = os.getenv("BEPAID_SHOP_ID")
 BEPAID_SECRET_KEY = os.getenv("BEPAID_SECRET_KEY")
+# Тестовый режим магазина (должен совпадать с настройками в ЛК bePaid)
+BEPAID_TEST = os.getenv("BEPAID_TEST", "").strip().lower() in ("1", "true", "yes")
 # Webhook settings
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "http://194.62.19.77:8080")
 WEBHOOK_PATH = "/bepaid/webhook"
@@ -43,7 +45,7 @@ logger = logging.getLogger(__name__)
 # Initialize bot and dispatcher
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-bepaid = BePaidAPI(shop_id=BEPAID_SHOP_ID, secret_key=BEPAID_SECRET_KEY)
+bepaid = BePaidAPI(shop_id=BEPAID_SHOP_ID, secret_key=BEPAID_SECRET_KEY, test_mode=BEPAID_TEST)
 
 # Захардкоженные ссылки в приветствии
 WELCOME_LINKS_HTML = """• <a href="https://psyprosto-help.by/policy">Политика конфиденциальности</a>
@@ -83,20 +85,39 @@ async def is_admin(user_id: int):
 async def bepaid_webhook_handler(request):
     try:
         data = await request.json()
-        transaction = data.get("transaction", {})
+        # Карточные уведомления: https://docs.bepaid.by/ru/using_api/webhooks/
+        transaction = data.get("transaction") if isinstance(data.get("transaction"), dict) else {}
+        if not transaction and isinstance(data, dict) and data.get("uid") and data.get("tracking_id"):
+            transaction = data
         status = transaction.get("status")
-        tracking_id = transaction.get("tracking_id") # format: user_id:timestamp
-        
-        logger.info(f"Received webhook: {transaction.get('uid')} status={status}")
+        tracking_id = transaction.get("tracking_id")  # format: user_id:timestamp
+
+        logger.info(
+            "Received webhook: uid=%s status=%s tracking_id=%s recurring_type=%s",
+            transaction.get("uid"),
+            status,
+            tracking_id,
+            transaction.get("recurring_type"),
+        )
 
         if status == "successful" and tracking_id:
             try:
                 user_id = int(tracking_id.split(":")[0])
-                
-                # Сохраняем токен карты для рекуррентов
-                credit_card = transaction.get("credit_card", {})
+
+                # Токен и email для последующих списаний (см. saved_cards)
+                credit_card = transaction.get("credit_card", {}) or {}
                 card_token = credit_card.get("token")
-                
+                customer = transaction.get("customer", {}) or {}
+                paid_email = customer.get("email")
+
+                if not card_token:
+                    logger.error(
+                        "Webhook OK but credit_card.token is empty — автосписания будут невозможны. "
+                        "user_id=%s uid=%s (нужна инициализирующая оплата с contract recurring+card_on_file)",
+                        user_id,
+                        transaction.get("uid"),
+                    )
+
                 # Снимаем возможный бан и продлеваем подписку (например, на 30 дней)
                 days_str = await db.get_setting("subscription_days") or "30"
                 days = int(days_str)
@@ -107,7 +128,13 @@ async def bepaid_webhook_handler(request):
                     logger.warning("Unban before invite failed for user %s: %s", user_id, e)
 
                 await db.clear_grace_period(user_id)
-                await db.set_subscription(user_id, status=True, end_date=new_end_date, card_token=card_token)
+                await db.set_subscription(
+                    user_id,
+                    status=True,
+                    end_date=new_end_date,
+                    card_token=card_token,
+                    email=paid_email,
+                )
                 end_date_str = datetime.utcfromtimestamp(new_end_date).strftime("%Y-%m-%d %H:%M UTC")
                 logger.info(
                     f"Payment OK: user_id={user_id}, card_saved={'yes' if card_token else 'no'}, "
@@ -704,6 +731,7 @@ async def main():
         logger.critical("CHANNEL_ID не задан в .env. Проверьте файл .env в папке с ботом.")
         raise SystemExit(1)
     logger.info(f"Канал для инвайтов и кика (один и тот же): CHANNEL_ID={CHANNEL_ID}")
+    logger.info("BePaid test_mode=%s (в .env: BEPAID_TEST=1 для тестового магазина)", BEPAID_TEST)
 
     await db.init_db()
     

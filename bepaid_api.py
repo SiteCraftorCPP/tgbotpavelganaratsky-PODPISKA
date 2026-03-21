@@ -1,10 +1,16 @@
 import aiohttp
 import logging
-import json
-import base64
-import asyncio
 
 logger = logging.getLogger(__name__)
+
+# Обязательные заголовки для CTP checkout: https://docs.bepaid.by/ru/integration/widget/payment_token/
+_CTP_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "X-API-Version": "2",
+}
+_JSON_HEADERS = {"Content-Type": "application/json", "Accept": "application/json"}
+
 
 class BePaidAPI:
     def __init__(self, shop_id: str, secret_key: str, test_mode: bool = False):
@@ -36,6 +42,10 @@ class BePaidAPI:
                     "currency": currency,
                     "description": description,
                     "tracking_id": order_id,
+                    # Инициализирующая транзакция для сохранённой карты (recurring / card-on-file)
+                    "additional_data": {
+                        "contract": ["recurring", "card_on_file"],
+                    },
                 },
                 "customer": {
                     "email": email
@@ -52,17 +62,13 @@ class BePaidAPI:
                         "read_only": []
                     }
                 },
-                # Для рекуррентных платежей важно запросить токен
                 "payment_method": {
-                  "types": ["credit_card"],
-                  "credit_card": {
-                    "save_card": True 
-                  }
-                }
+                    "types": ["credit_card"],
+                },
             }
         }
 
-        async with aiohttp.ClientSession(auth=self._auth) as session:
+        async with aiohttp.ClientSession(auth=self._auth, headers=_CTP_HEADERS) as session:
             try:
                 async with session.post(url, json=payload) as response:
                     data = await response.json()
@@ -86,6 +92,9 @@ class BePaidAPI:
         
         amount_cents = int(amount * 100)
         
+        # По документации: при оплате по токену обязателен additional_data.contract.
+        # Без него шлюз может отклонять списание. Рекуррент с сервера без участия клиента —
+        # без 3-D Secure (нужно согласование с поддержкой bePaid/эквайером).
         payload = {
             "request": {
                 "amount": amount_cents,
@@ -98,11 +107,15 @@ class BePaidAPI:
                 },
                 "customer": {
                     "email": email
-                }
+                },
+                "additional_data": {
+                    "contract": ["recurring", "card_on_file"],
+                },
+                "skip_three_d_secure_verification": True,
             }
         }
 
-        async with aiohttp.ClientSession(auth=self._auth) as session:
+        async with aiohttp.ClientSession(auth=self._auth, headers=_JSON_HEADERS) as session:
             try:
                 async with session.post(gateway_url, json=payload) as response:
                     data = await response.json()
@@ -111,8 +124,16 @@ class BePaidAPI:
                     if response.status in (200, 201) and transaction.get("status") == "successful":
                         return True, transaction
                     else:
-                        message = transaction.get("message") or "Unknown error"
-                        return False, message
+                        message = transaction.get("message") or data.get("message")
+                        code = transaction.get("code") or data.get("code")
+                        err = f"{message or 'Unknown error'}" + (f" [{code}]" if code else "")
+                        logger.error(
+                            "BePaid recurrent charge rejected: status=%s http=%s body=%s",
+                            transaction.get("status"),
+                            response.status,
+                            data,
+                        )
+                        return False, err
             except Exception as e:
                 logger.error(f"BePaid recurrent charge failed: {e}")
                 return False, str(e)
