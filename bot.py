@@ -1295,16 +1295,6 @@ async def cmp_attribution_dashboard(callback: types.CallbackQuery):
             cap = "Выгрузка оплат по метке: " + payload_value
             await bot.send_document(callback.from_user.id, doc_pay, caption=cap[:1024])
 
-        elif mode == "xu":
-            giant = await db.build_export_all_users()
-            blob = csv_attachment_from_grid(giant, "EXPORT_users_all")
-            await bot.send_document(callback.from_user.id, blob, caption="Все пользователи (+метки первого входа).")
-
-        elif mode == "xp":
-            gp = await db.build_export_all_payments()
-            doc = csv_attachment_from_grid(gp, "EXPORT_payments_all")
-            await bot.send_document(callback.from_user.id, doc, caption="Все успешные оплаты (+метки).")
-
         else:
             await sender("Неизвестная команда CMP. Откройте раздел заново.", hub_kb)
 
