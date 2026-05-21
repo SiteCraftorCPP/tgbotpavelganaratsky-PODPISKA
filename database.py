@@ -1,7 +1,7 @@
 import aiosqlite
 import os
 import time
-from typing import Optional
+from typing import List, Optional, Tuple
 
 DB_NAME = "bot_database.db"
 
@@ -66,6 +66,52 @@ async def init_db():
         try:
             await db.execute("ALTER TABLE users ADD COLUMN last_payment_fail_notice_ts REAL")
         except: pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN start_payload TEXT")
+        except: pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN utm_source TEXT")
+        except: pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN utm_medium TEXT")
+        except: pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN utm_campaign TEXT")
+        except: pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN tapped_buy BOOLEAN DEFAULT 0")
+        except: pass
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                start_payload TEXT NOT NULL UNIQUE,
+                created_at REAL
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS payment_success (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                bepaid_uid TEXT,
+                tracking_id TEXT,
+                amount_cents INTEGER,
+                currency TEXT,
+                paid_at REAL NOT NULL,
+                recurring INTEGER NOT NULL DEFAULT 0,
+                start_payload TEXT,
+                utm_source TEXT,
+                utm_medium TEXT,
+                utm_campaign TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_payment_payload ON payment_success (start_payload)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_payment_user ON payment_success (user_id)
+        """)
 
 
         await db.execute("""
@@ -277,3 +323,509 @@ async def set_setting(key, value):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
         await db.commit()
+
+
+async def sync_campaign_catalog() -> None:
+    """Подтягивает в справочник все метки, которые уже есть в users и payment_success (для админских кнопок)."""
+    now = time.time()
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO campaigns (start_payload, created_at)
+            SELECT DISTINCT TRIM(start_payload), ?
+            FROM users
+            WHERE COALESCE(TRIM(start_payload), '') <> ''
+            """,
+            (now,),
+        )
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO campaigns (start_payload, created_at)
+            SELECT DISTINCT TRIM(start_payload), ?
+            FROM payment_success
+            WHERE COALESCE(TRIM(start_payload), '') <> ''
+            """,
+            (now,),
+        )
+        await db.commit()
+
+
+async def register_campaign(payload: str) -> None:
+    """Регистрирует кампанию по raw start_payload."""
+    cleaned = payload.strip()
+    if not cleaned:
+        return
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO campaigns (start_payload, created_at) VALUES (?, ?)",
+            (cleaned, time.time()),
+        )
+        await db.commit()
+
+
+async def count_campaigns() -> int:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM campaigns") as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def fetch_campaign_summaries_page(limit: int, offset: int) -> List[Tuple[int, str, int, int]]:
+    """id кампании, payload, число входов (/start по метке), число успешных оплат с этим payload."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT c.id, c.start_payload,
+              COALESCE((
+                  SELECT COUNT(*)
+                  FROM users u
+                  WHERE COALESCE(TRIM(u.start_payload), '') = TRIM(c.start_payload)
+              ), 0) AS lc,
+              COALESCE((
+                  SELECT COUNT(*)
+                  FROM payment_success ps
+                  WHERE COALESCE(TRIM(ps.start_payload), '') = TRIM(c.start_payload)
+              ), 0) AS pc
+            FROM campaigns c
+            ORDER BY c.created_at DESC, c.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [(int(r[0]), str(r[1]), int(r[2]), int(r[3])) for r in rows]
+
+
+async def get_campaign_by_id(campaign_id: int) -> Optional[Tuple[int, str, int, int]]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT c.id, c.start_payload,
+              COALESCE((
+                  SELECT COUNT(*)
+                  FROM users u
+                  WHERE COALESCE(TRIM(u.start_payload), '') = TRIM(c.start_payload)
+              ), 0),
+              COALESCE((
+                  SELECT COUNT(*)
+                  FROM payment_success ps
+                  WHERE COALESCE(TRIM(ps.start_payload), '') = TRIM(c.start_payload)
+              ), 0)
+            FROM campaigns c
+            WHERE c.id = ?
+            """,
+            (campaign_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    return int(row[0]), str(row[1]), int(row[2]), int(row[3])
+
+
+async def get_attribution_for_user(user_id: int) -> Tuple[str, str, str, str]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT
+              COALESCE(start_payload,''),
+              COALESCE(utm_source,''),
+              COALESCE(utm_medium,''),
+              COALESCE(utm_campaign,'')
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return ("", "", "", "")
+    return tuple(str(x) for x in row)  # type: ignore[misc]
+
+
+async def maybe_set_first_touch_utm(
+    user_id: int,
+    start_payload_raw: str,
+    utm_source: str,
+    utm_medium: str,
+    utm_campaign: str,
+) -> bool:
+    """
+    First-touch: записывает метку только если ранее её не было.
+    Возвращает True если появилась новая метка первого захода.
+    """
+    raw = start_payload_raw.strip()
+    if not raw:
+        return False
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            UPDATE users
+               SET start_payload = ?,
+                   utm_source = ?,
+                   utm_medium = ?,
+                   utm_campaign = ?
+             WHERE id = ?
+               AND (
+                    start_payload IS NULL OR TRIM(start_payload) = ''
+               )
+            """,
+            (raw, utm_source.strip(), utm_medium.strip(), utm_campaign.strip(), user_id),
+        )
+        async with db.execute("SELECT changes()") as cs:
+            ch_row = await cs.fetchone()
+        changed_rows = int(ch_row[0] if ch_row and ch_row[0] is not None else 0)
+        if changed_rows > 0:
+            await db.execute(
+                "INSERT OR IGNORE INTO campaigns (start_payload, created_at) VALUES (?, ?)",
+                (raw, time.time()),
+            )
+        await db.commit()
+
+    return changed_rows > 0
+
+
+async def touch_tapped_buy(user_id: int) -> None:
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET tapped_buy = 1 WHERE id = ?", (user_id,))
+        await db.commit()
+
+
+async def cancel_auto_renew_keep_access(user_id: int) -> None:
+    """
+    Отмена автосписаний без потери доступа до subscription_end_date.
+    Не трогаем subscription_active, дату доступа и грейс-периоды — кик остаётся только на планировщике.
+    """
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE users SET card_token = '' WHERE id = ?",
+            (user_id,),
+        )
+        await db.commit()
+
+
+async def record_payment_success_row(
+    user_id: int,
+    *,
+    bepaid_uid: Optional[str],
+    tracking_id: Optional[str],
+    amount_cents: Optional[int],
+    currency: Optional[str],
+    paid_at_ts: float,
+    recurring: bool,
+    payload: Optional[str],
+    utm_source: Optional[str],
+    utm_medium: Optional[str],
+    utm_campaign: Optional[str],
+) -> None:
+    payload = payload or ""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT INTO payment_success (
+               user_id, bepaid_uid, tracking_id,
+               amount_cents, currency, paid_at,
+               recurring, start_payload, utm_source, utm_medium, utm_campaign
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                user_id,
+                bepaid_uid,
+                tracking_id,
+                amount_cents,
+                currency,
+                paid_at_ts,
+                1 if recurring else 0,
+                payload.strip(),
+                utm_source or "",
+                utm_medium or "",
+                utm_campaign or "",
+            ),
+        )
+        await db.commit()
+
+    await register_campaign(payload)
+
+
+async def count_payments_same_payload_exact(payload: str) -> int:
+    token = payload.strip()
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM payment_success WHERE COALESCE(TRIM(start_payload),'')=?",
+            (token,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def count_landings_exact(payload: str) -> int:
+    token = payload.strip()
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE COALESCE(TRIM(start_payload),'')=?",
+            (token,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def paginate_users_by_payload_landings(payload: str, limit: int, offset: int) -> List[
+    Tuple[int, Optional[str], Optional[str], int, int, int, int]
+]:
+    """id, username, full_name, agreed, tapped_buy, sub_active, in_grace."""
+    token = payload.strip()
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT id,
+                   username,
+                   full_name,
+                   agreed_to_terms,
+                   tapped_buy,
+                   subscription_active,
+                   CASE WHEN grace_until_ts IS NOT NULL THEN 1 ELSE 0 END
+              FROM users
+             WHERE COALESCE(TRIM(start_payload), '') = ?
+             ORDER BY join_date DESC
+             LIMIT ? OFFSET ?
+            """,
+            (token, limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    out: List[Tuple[int, Optional[str], Optional[str], int, int, int, int]] = []
+    for r in rows:
+        out.append(
+            (
+                int(r[0]),
+                r[1],
+                r[2],
+                int(r[3] or 0),
+                int(r[4] or 0),
+                int(r[5] or 0),
+                int(r[6] or 0),
+            )
+        )
+    return out
+
+
+async def paginate_payments_panel(payload: str, limit: int, offset: int) -> List[
+    Tuple[int, Optional[str], Optional[str], int, float, str]
+]:
+    """user_id, username, recurring, paid_at_unix, truncated tracking."""
+    token = payload.strip()
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT p.user_id, u.username, p.recurring, p.paid_at,
+                   COALESCE(p.tracking_id,'')
+              FROM payment_success p
+              LEFT JOIN users u ON u.id = p.user_id
+             WHERE COALESCE(TRIM(p.start_payload), '') = ?
+             ORDER BY p.paid_at DESC
+             LIMIT ? OFFSET ?
+            """,
+            (token, limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [(int(r[0]), r[1], int(r[2] or 0), float(r[3]), str(r[4] or "")) for r in rows]
+
+
+async def build_csv_landings(payload: str) -> List[List[object]]:
+    token = payload.strip()
+    rows = await build_campaign_csv_landings_tuple(token)
+    header = [
+        "user_id",
+        "username",
+        "full_name",
+        "agreed_to_terms",
+        "tapped_buy",
+        "subscription_active",
+        "in_grace",
+        "subscription_end_date_unix",
+        "card_saved",
+        "start_payload",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "join_date",
+    ]
+    data: List[List[object]] = [header]
+    for r in rows:
+        data.append(list(r))
+    return data
+
+
+async def build_campaign_csv_landings_tuple(token: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT id, username, full_name,
+                   agreed_to_terms,
+                   tapped_buy,
+                   subscription_active,
+                   CASE WHEN grace_until_ts IS NOT NULL THEN 1 ELSE 0 END,
+                   subscription_end_date,
+                   CASE WHEN COALESCE(TRIM(card_token), '') <> '' THEN 1 ELSE 0 END,
+                   COALESCE(start_payload,''),
+                   COALESCE(utm_source,''),
+                   COALESCE(utm_medium,''),
+                   COALESCE(utm_campaign,''),
+                   join_date
+            FROM users
+            WHERE COALESCE(TRIM(start_payload), '') = ?
+            ORDER BY join_date DESC
+            """,
+            (token,),
+        ) as cursor:
+            return await cursor.fetchall()
+
+
+async def build_csv_payments_campaign(token: str) -> List[List[object]]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT p.user_id,
+                   u.username,
+                   u.full_name,
+                   p.recurring,
+                   datetime(p.paid_at, 'unixepoch', 'utc'),
+                   COALESCE(p.bepaid_uid,''),
+                   COALESCE(p.tracking_id,''),
+                   COALESCE(CAST(p.amount_cents AS TEXT), ''),
+                   COALESCE(p.currency,''),
+                   COALESCE(p.start_payload,''),
+                   COALESCE(p.utm_source,''),
+                   COALESCE(p.utm_medium,''),
+                   COALESCE(p.utm_campaign,'')
+              FROM payment_success p
+              LEFT JOIN users u ON u.id = p.user_id
+             WHERE COALESCE(TRIM(p.start_payload), '') = ?
+             ORDER BY p.paid_at DESC
+            """,
+            (token,),
+        ) as cursor:
+            flat = await cursor.fetchall()
+
+    hdr = [
+        "user_id",
+        "username",
+        "full_name",
+        "recurring",
+        "paid_at_utc",
+        "bepaid_uid",
+        "tracking_id",
+        "amount_cents",
+        "currency",
+        "start_payload",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+    ]
+    return [hdr] + [list(row) for row in flat]
+
+
+async def payment_success_already_recorded(bepaid_uid: Optional[str], tracking_id: Optional[str]) -> bool:
+    """Защита от повторных вебхуков bePaid."""
+    bu = bepaid_uid.strip() if isinstance(bepaid_uid, str) else ""
+    tt = tracking_id.strip() if isinstance(tracking_id, str) else ""
+    async with aiosqlite.connect(DB_NAME) as db:
+        if bu:
+            async with db.execute(
+                "SELECT 1 FROM payment_success WHERE bepaid_uid = ? LIMIT 1",
+                (bu,),
+            ) as cursor:
+                if await cursor.fetchone():
+                    return True
+        if tt:
+            async with db.execute(
+                "SELECT 1 FROM payment_success WHERE tracking_id = ? LIMIT 1",
+                (tt,),
+            ) as cursor:
+                if await cursor.fetchone():
+                    return True
+        return False
+
+
+async def fetch_export_users_rows():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT id, username, full_name,
+                   agreed_to_terms,
+                   tapped_buy,
+                   subscription_active,
+                   subscription_end_date,
+                   CASE WHEN COALESCE(TRIM(card_token), '') <> '' THEN 1 ELSE 0 END,
+                   COALESCE(start_payload,''),
+                   COALESCE(utm_source,''),
+                   COALESCE(utm_medium,''),
+                   COALESCE(utm_campaign,''),
+                   join_date
+            FROM users
+            ORDER BY join_date DESC
+            """
+        ) as cursor:
+            return await cursor.fetchall()
+
+
+async def fetch_export_payment_rows():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT p.user_id, u.username, u.full_name,
+                   p.recurring,
+                   datetime(p.paid_at, 'unixepoch', 'utc'),
+                   COALESCE(p.bepaid_uid,''),
+                   COALESCE(p.tracking_id,''),
+                   COALESCE(CAST(p.amount_cents AS TEXT), ''),
+                   COALESCE(p.currency,''),
+                   COALESCE(p.start_payload,''),
+                   COALESCE(p.utm_source,''),
+                   COALESCE(p.utm_medium,''),
+                   COALESCE(p.utm_campaign,'')
+            FROM payment_success p
+            LEFT JOIN users u ON u.id = p.user_id
+            ORDER BY p.paid_at DESC
+            """
+        ) as cursor:
+            return await cursor.fetchall()
+
+
+async def build_export_all_users() -> List[List[object]]:
+    rows = await fetch_export_users_rows()
+    hdr = [
+        "user_id",
+        "username",
+        "full_name",
+        "agreed_to_terms",
+        "tapped_buy",
+        "subscription_active",
+        "subscription_end_date_unix",
+        "card_saved",
+        "start_payload",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "join_date_sql",
+    ]
+    return [hdr] + [list(row) for row in rows]
+
+
+async def build_export_all_payments() -> List[List[object]]:
+    rows = await fetch_export_payment_rows()
+    hdr = [
+        "user_id",
+        "username",
+        "full_name",
+        "recurring",
+        "paid_at_utc",
+        "bepaid_uid",
+        "tracking_id",
+        "amount_cents",
+        "currency",
+        "start_payload",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+    ]
+    return [hdr] + [list(row) for row in rows]
