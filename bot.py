@@ -842,18 +842,11 @@ async def cmd_stats_campaigns(message: types.Message):
         )
         return
     await message.answer(
-        "📊 Метки и кампании (бот @n_deniseva_bot).\n\n"
-        "Из базы бота собираются: первый хвост <code>?start=…</code> у каждого пользователя (first touch) и "
-        "журнал успешных оплат с той же меткой на момент оплаты.\n\n"
-        "Ссылки-примеры:\n"
-        "<code>https://t.me/n_deniseva_bot?start=vk__march</code>\n"
-        "<code>https://t.me/n_deniseva_bot?start=viber__broadcast__nov</code>\n\n"
-        "<b>Важно:</b> переход считается только после «Старт» по ссылке; сайт или рекламный кабинет без "
-        "Telegram здесь не подключаются.\n\n"
-        "Подробнее — в тексте главного экрана раздела (кнопка ниже или «📊 Метки и кампании»).\n\n"
-        "Выберите действие:",
+        "📊 Метки и кампании\n\n"
+        "Примеры ссылок:\n"
+        "https://t.me/n_deniseva_bot?start=vk__march\n"
+        "https://t.me/n_deniseva_bot?start=viber__broadcast__nov",
         reply_markup=kb.get_campaigns_hub_keyboard(),
-        parse_mode="HTML",
     )
 
 
@@ -1002,22 +995,9 @@ async def cmp_attribution_dashboard(callback: types.CallbackQuery):
 
     hub_intro = (
         "📊 Метки и кампании\n\n"
-        "Зачем раздел:\n"
-        "• По вашим рекламным ссылкам с хвостом ?start=… видно:\n"
-        "  сколько людей впервые зашло в бота с каждой меткой (first touch) и сколько успешных "
-        "оплат пришло с этой же меткой (ежемесячные списания тоже пишутся в журнал с той же меткой).\n"
-        "• Сводка, карточка кампании, списки и CSV здесь всё это подтягивают только из нашей базы SQLite "
-        "(таблица пользователей + журнал платежей), не из ВК или сайта.\n\n"
-        "Ссылки (бот @n_deniseva_bot), примеры:\n"
+        "Примеры ссылок:\n"
         "https://t.me/n_deniseva_bot?start=vk__march\n"
-        "https://t.me/n_deniseva_bot?start=viber__broadcast__nov\n"
-        "(параметр start= придумываете вы; в статистику попадает только активность в Telegram.)\n\n"
-        "Правило разметки: части можно разносить через ДВОЙНОЕ подчёркивание __\n"
-        "• vk__march → источник vk, кампания march\n"
-        "• viber__broadcast__nov → источник, медиум, кампания\n\n"
-        "Важно: засчитывается только запуск после нажатия «Старт» по ссылке. Первая сохранённая метка не "
-        "перезаписывается, если человек позже придёт по другой ссылке.\n\n"
-        "Ниже: «Сводка» по всем меткам и «Кампании» с кнопками по каждой метке, у которой уже есть данные."
+        "https://t.me/n_deniseva_bot?start=viber__broadcast__nov"
     )
 
     async def sender(txt: str, markup=None, html: bool = False):
