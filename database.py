@@ -113,6 +113,12 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_payment_user ON payment_success (user_id)
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS hidden_campaign_payloads (
+                start_payload TEXT PRIMARY KEY NOT NULL,
+                hidden_at REAL NOT NULL
+            )
+        """)
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS admins (
@@ -326,24 +332,32 @@ async def set_setting(key, value):
 
 
 async def sync_campaign_catalog() -> None:
-    """Подтягивает в справочник все метки, которые уже есть в users и payment_success (для админских кнопок)."""
+    """Подтягивает в справочник метки из users и payment_success (исключая скрытые админом)."""
     now = time.time()
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             """
             INSERT OR IGNORE INTO campaigns (start_payload, created_at)
-            SELECT DISTINCT TRIM(start_payload), ?
-            FROM users
-            WHERE COALESCE(TRIM(start_payload), '') <> ''
+            SELECT DISTINCT TRIM(u.start_payload), ?
+            FROM users u
+            WHERE COALESCE(TRIM(u.start_payload), '') <> ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM hidden_campaign_payloads h
+                  WHERE TRIM(h.start_payload) = TRIM(u.start_payload)
+              )
             """,
             (now,),
         )
         await db.execute(
             """
             INSERT OR IGNORE INTO campaigns (start_payload, created_at)
-            SELECT DISTINCT TRIM(start_payload), ?
-            FROM payment_success
-            WHERE COALESCE(TRIM(start_payload), '') <> ''
+            SELECT DISTINCT TRIM(ps.start_payload), ?
+            FROM payment_success ps
+            WHERE COALESCE(TRIM(ps.start_payload), '') <> ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM hidden_campaign_payloads h
+                  WHERE TRIM(h.start_payload) = TRIM(ps.start_payload)
+              )
             """,
             (now,),
         )
@@ -356,11 +370,40 @@ async def register_campaign(payload: str) -> None:
     if not cleaned:
         return
     async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT 1 FROM hidden_campaign_payloads WHERE TRIM(start_payload)=TRIM(?) LIMIT 1",
+            (cleaned,),
+        ) as c:
+            if await c.fetchone():
+                return
         await db.execute(
             "INSERT OR IGNORE INTO campaigns (start_payload, created_at) VALUES (?, ?)",
             (cleaned, time.time()),
         )
         await db.commit()
+
+
+async def purge_campaign_from_admin_lists(campaign_id: int) -> Optional[str]:
+    """
+    Убрать кампанию из админских списков и не показывать снова при sync,
+    если payload совпадает. Данные в users и payment_success не удаляются.
+    """
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT start_payload FROM campaigns WHERE id = ?",
+            (campaign_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row or not row[0]:
+            return None
+        pay = str(row[0]).strip()
+        await db.execute(
+            "INSERT OR IGNORE INTO hidden_campaign_payloads (start_payload, hidden_at) VALUES (?, ?)",
+            (pay, time.time()),
+        )
+        await db.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,))
+        await db.commit()
+        return pay
 
 
 async def count_campaigns() -> int:
@@ -475,10 +518,18 @@ async def maybe_set_first_touch_utm(
             ch_row = await cs.fetchone()
         changed_rows = int(ch_row[0] if ch_row and ch_row[0] is not None else 0)
         if changed_rows > 0:
-            await db.execute(
-                "INSERT OR IGNORE INTO campaigns (start_payload, created_at) VALUES (?, ?)",
-                (raw, time.time()),
-            )
+            skip_ins = False
+            async with db.execute(
+                "SELECT 1 FROM hidden_campaign_payloads WHERE TRIM(start_payload)=TRIM(?) LIMIT 1",
+                (raw,),
+            ) as hx:
+                if await hx.fetchone():
+                    skip_ins = True
+            if not skip_ins:
+                await db.execute(
+                    "INSERT OR IGNORE INTO campaigns (start_payload, created_at) VALUES (?, ?)",
+                    (raw, time.time()),
+                )
         await db.commit()
 
     return changed_rows > 0

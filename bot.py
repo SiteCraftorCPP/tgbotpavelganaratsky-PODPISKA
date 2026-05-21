@@ -2,15 +2,11 @@ import logging
 import asyncio
 import os
 import time
-import csv
-import io
 import html
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
-from urllib.parse import quote
-
 from aiohttp import web
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
@@ -94,15 +90,6 @@ async def is_admin(user_id: int):
     return False
 
 
-def extract_bot_username_for_links() -> Optional[str]:
-    bot_link = (os.getenv("BOT_LINK") or "").strip()
-    m = re.search(r"(?:https?://)?(?:t(?:elegram)?\.me)/([A-Za-z0-9_]+)", bot_link)
-    if m:
-        return m.group(1)
-    extra = os.getenv("BOT_USERNAME", "").strip()
-    return extra or None
-
-
 def coerce_tx_amount_currency(transaction: dict) -> Tuple[Optional[int], Optional[str]]:
     raw = transaction.get("amount") or transaction.get("paid_amount")
     curr = transaction.get("currency") or ""
@@ -151,16 +138,6 @@ async def cmp_edit_or_answer(
             parse_mode=parse_mode,
             disable_web_page_preview=True,
         )
-
-
-def csv_attachment_from_grid(rows_grid: List[List[object]], basename: str) -> types.BufferedInputFile:
-    out = io.StringIO()
-    w = csv.writer(out, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
-    for row in rows_grid:
-        w.writerow(row)
-    blob = ("\ufeff" + out.getvalue()).encode("utf-8")
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", basename)[:128] or "export"
-    return types.BufferedInputFile(blob, filename=f"{safe}.csv")
 
 
 def chunks_for_telegram(text: str, max_len: int = 3900):
@@ -1032,14 +1009,12 @@ async def cmp_attribution_dashboard(callback: types.CallbackQuery):
             body_lines = [
                 "Сводка по меткам:",
                 "",
-                "(заход — первый сохранённый start=… у пользователя; оплаты — все успешные строки платежного журнала с тем же хвостом)",
-                "",
             ]
             for _cid, payl, lc, pc in rows_all:
-                label = payl if len(payl) <= 80 else payl[:77] + "..."
-                body_lines.append(f"{label}")
-                body_lines.append(f"  👣 зашли по метке: {lc}")
-                body_lines.append(f"  💳 успешные оплаты (все платежи): {pc}")
+                disp = payl if len(payl) <= 500 else payl[:497] + "..."
+                body_lines.append(disp)
+                body_lines.append(f"👣 зашли по метке: {lc}")
+                body_lines.append(f"💳 успешные оплаты: {pc}")
                 body_lines.append("")
 
             assembled = "\n".join(body_lines).strip("\n")
@@ -1101,8 +1076,7 @@ async def cmp_attribution_dashboard(callback: types.CallbackQuery):
 
             markup = types.InlineKeyboardMarkup(inline_keyboard=markup_rows)
             headline = (
-                f"Выберите метку кампании (стр. {page+1}/{pages}, всего {total_entries}):\n"
-                "Формат кнопки: 👤 first-touch входы • 💳 все успешные оплаты"
+                f"Выберите метку кампании (стр. {page+1}/{pages}, всего {total_entries}):\n\n"
             )
             await sender(headline, markup)
 
@@ -1114,31 +1088,49 @@ async def cmp_attribution_dashboard(callback: types.CallbackQuery):
                 return
 
             _, payl_raw, lc, pc = meta
-            bot_un = extract_bot_username_for_links()
-            pay_esc = html.escape(payl_raw)
-            if bot_un:
-                ready_link = f"https://t.me/{bot_un}?start={quote(payl_raw, safe='')}"
-                link_esc = html.escape(ready_link)
-                txt = (
-                    f"📌 Метка: <code>{pay_esc}</code>\n"
-                    f"👣 First-touch заходов: <b>{lc}</b>\n"
-                    f"💳 Успешных записей оплат с этим payload: <b>{pc}</b>\n\n"
-                    f"Готовая ссылка:\n<code>{link_esc}</code>"
-                )
-            else:
-                txt = (
-                    f"📌 Метка: <code>{pay_esc}</code>\n"
-                    f"👣 First-touch заходов: <b>{lc}</b>\n"
-                    f"💳 Успешных записей оплат с этим payload: <b>{pc}</b>\n\n"
-                    "Чтобы бот смог автоматически показать ссылку вида "
-                    "<code>https://t.me/…</code>, укажите <code>BOT_LINK</code> "
-                    "или <code>BOT_USERNAME</code> в .env."
-                )
+            txt = (
+                f"📌 Метка: {payl_raw}\n"
+                f"👣 First-touch заходов: {lc}\n"
+                f"💳 Успешных оплат: {pc}"
+            )
             await cmp_edit_or_answer(
                 callback,
                 txt,
                 kb.campaign_detail_keyboard(cid),
-                parse_mode="HTML",
+                parse_mode=None,
+            )
+
+        elif mode == "drq" and len(pieces) > 2 and pieces[2].isdigit():
+            cid = int(pieces[2])
+            meta = await db.get_campaign_by_id(cid)
+            if not meta:
+                await sender("Раздел уже удалён или не найден.", hub_kb)
+                return
+            _, payl_raw, _, _ = meta
+            confirm_txt = (
+                "Удалить этот раздел из списка кампаний?\n\n"
+                f"Метка: {payl_raw}\n\n"
+                "Данные пользователей и оплат в базе не удаляются — раздел пропадает из админки; "
+                "та же текстовая метка не будет снова добавляться в список автоматически на синхронизации."
+            )
+            await cmp_edit_or_answer(
+                callback,
+                confirm_txt,
+                kb.campaign_delete_confirm_keyboard(cid),
+                parse_mode=None,
+            )
+
+        elif mode == "dok" and len(pieces) > 2 and pieces[2].isdigit():
+            cid = int(pieces[2])
+            payload_removed = await db.purge_campaign_from_admin_lists(cid)
+            if payload_removed is None:
+                await sender("Не удалось убрать раздел.", hub_kb)
+                return
+            await cmp_edit_or_answer(
+                callback,
+                f"Раздел «{payload_removed}» убран из списка.",
+                kb.get_campaigns_hub_keyboard(),
+                parse_mode=None,
             )
 
         elif mode == "u" and len(pieces) > 3 and pieces[2].isdigit() and pieces[3].isdigit():
@@ -1265,30 +1257,6 @@ async def cmp_attribution_dashboard(callback: types.CallbackQuery):
                 types.InlineKeyboardMarkup(inline_keyboard=rows_mk),
                 parse_mode="HTML",
             )
-
-        elif mode == "cl" and len(pieces) > 2 and pieces[2].isdigit():
-            cid = int(pieces[2])
-            meta = await db.get_campaign_by_id(cid)
-            if not meta:
-                await callback.message.answer("Кампания не найдена.")
-                return
-            payload_value = meta[1]
-            grid = await db.build_csv_landings(payload_value)
-            doc = csv_attachment_from_grid(grid, f"LAND_{payload_value}_{cid}")
-            cap = "Выгрузка заходов по метке: " + payload_value
-            await bot.send_document(callback.from_user.id, doc, caption=cap[:1024])
-
-        elif mode == "cp" and len(pieces) > 2 and pieces[2].isdigit():
-            cid = int(pieces[2])
-            meta = await db.get_campaign_by_id(cid)
-            if not meta:
-                await callback.message.answer("Кампания не найдена.")
-                return
-            payload_value = meta[1]
-            grid_pay = await db.build_csv_payments_campaign(payload_value)
-            doc_pay = csv_attachment_from_grid(grid_pay, f"PAY_{payload_value}_{cid}")
-            cap = "Выгрузка оплат по метке: " + payload_value
-            await bot.send_document(callback.from_user.id, doc_pay, caption=cap[:1024])
 
         else:
             await sender("Неизвестная команда CMP. Откройте раздел заново.", hub_kb)

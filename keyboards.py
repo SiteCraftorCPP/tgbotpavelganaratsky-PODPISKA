@@ -75,11 +75,17 @@ def campaign_detail_keyboard(cid: int):
         inline_keyboard=[
             [InlineKeyboardButton(text="👣 Кто зашёл по метке", callback_data=f"CMP|u|{cid}|0")],
             [InlineKeyboardButton(text="💰 Кто оплатил", callback_data=f"CMP|p|{cid}|0")],
-            [
-                InlineKeyboardButton(text="CSV заходов", callback_data=f"CMP|cl|{cid}"),
-                InlineKeyboardButton(text="CSV оплат", callback_data=f"CMP|cp|{cid}"),
-            ],
+            [InlineKeyboardButton(text="🗑 Удалить раздел из списка", callback_data=f"CMP|drq|{cid}")],
             [InlineKeyboardButton(text="🔙 Назад к кампаниям", callback_data="CMP|lst|0")],
+        ]
+    )
+
+
+def campaign_delete_confirm_keyboard(cid: int):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, убрать", callback_data=f"CMP|dok|{cid}")],
+            [InlineKeyboardButton(text="Отмена", callback_data=f"CMP|det|{cid}")],
         ]
     )
 
