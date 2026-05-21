@@ -807,6 +807,17 @@ async def cmd_force_kick(message: types.Message):
 async def cmd_admin(message: types.Message):
     user_id = message.from_user.id
     if not await is_admin(user_id):
+        await message.answer(
+            "⛔ Эта команда только для администраторов бота.\n\n"
+            f"Ваш Telegram ID: <code>{user_id}</code>\n\n"
+            "Добавьте этот ID в список <code>ADMIN_IDS</code> в файле "
+            "<code>.env</code> на сервере (через запятую без пробелов) и выполните "
+            "<code>systemctl restart tgbot-podpiska.service</code>.\n\n"
+            "<i>Раздел со статистикой по ссылкам находится здесь после входа:</i> "
+            "кнопка «📊 Метки и кампании» или команды /stats или /campaigns.",
+            parse_mode="HTML",
+        )
+        logger.warning("/admin denied: user_id=%s not in ADMIN_IDS/admins DB", user_id)
         return
 
     # Инлайн-меню админа
@@ -818,6 +829,27 @@ async def cmd_admin(message: types.Message):
         resize_keyboard=True,
     )
     await message.answer("Клавиатура управления:", reply_markup=admin_kb)
+
+
+@dp.message(Command("stats", "campaigns"))
+async def cmd_stats_campaigns(message: types.Message):
+    """Быстрый вход в раздел меток (переходы по ?start= и оплаты с snapshot метки в журнале)."""
+    uid = message.from_user.id
+    if not await is_admin(uid):
+        await message.answer(
+            f"⛔ Только админ. Ваш ID: <code>{uid}</code> — см. ADMIN_IDS в .env на VPS.",
+            parse_mode="HTML",
+        )
+        return
+    await message.answer(
+        "📊 Здесь: сводка по меткам, список кампаний, кто пришёл с какой "
+        "<code>t.me/bot?start=...</code> и кто оплатил с этой меткой (из журнала успешных оплат).\n\n"
+        "<b>Важно:</b> переход считается только после нажатия «Старт» по ссылке; "
+        "первая метка у пользователя не перезаписывается (first touch).\n\n"
+        "Выберите действие:",
+        reply_markup=kb.get_campaigns_hub_keyboard(),
+        parse_mode="HTML",
+    )
 
 
 @dp.callback_query(F.data == "open_admin_panel")
