@@ -29,6 +29,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 if CHANNEL_ID is not None:
     CHANNEL_ID = CHANNEL_ID.strip()
+CHANNEL_INVITE_LINK = (os.getenv("CHANNEL_INVITE_LINK") or "https://t.me/+DxKiacUx8M9mMjBi").strip()
 MANAGER_LINK = (os.getenv("MANAGER_LINK") or "https://t.me/nastyaprostozhit").strip()
 
 BEPAID_SHOP_ID = os.getenv("BEPAID_SHOP_ID")
@@ -275,13 +276,7 @@ async def bepaid_webhook_handler(request):
                     notify_admins_after_payment(user_id, pl_snapshot, recur_mark, pay_cnt)
                 )
                 
-                # Инвайт только в канал из CHANNEL_ID (.env)
-                invite_link_obj = await bot.create_chat_invite_link(
-                    chat_id=CHANNEL_ID,
-                    member_limit=1,
-                    name=f"Sub_{user_id}_{int(time.time())}"
-                )
-                invite_link = invite_link_obj.invite_link
+                invite_link = CHANNEL_INVITE_LINK
                 
                 payment_text = await db.get_setting("payment_success_text") or "✅ Оплата прошла успешно!\n\nНажмите кнопку ниже, чтобы вступить в канал."
                 
@@ -567,20 +562,11 @@ async def start_payment(callback: types.CallbackQuery):
         days = int(days_str)
         new_end_date = time.time() + (days * 24 * 60 * 60)
         await db.set_subscription(user_id, status=True, end_date=new_end_date)
-        try:
-            invite_link_obj = await bot.create_chat_invite_link(
-                chat_id=CHANNEL_ID,
-                member_limit=1,
-                name=f"Admin_{user_id}_{int(time.time())}"
-            )
-            invite_link = invite_link_obj.invite_link
-        except Exception as e:
-            logger.warning("Admin bypass: could not create invite link: %s", e)
-            invite_link = None
+        invite_link = CHANNEL_INVITE_LINK
         payment_text = await db.get_setting("payment_success_text") or "✅ Оплата прошла успешно!\n\nНажмите кнопку ниже, чтобы вступить в канал."
         await callback.message.answer(
-            f"✅ [Админ] Доступ открыт без оплаты.\n\n{payment_text}" if invite_link else "✅ [Админ] Доступ открыт. Ссылка на канал не создана (проверьте права бота).",
-            reply_markup=kb.get_member_keyboard(MANAGER_LINK, invite_link=invite_link or "")
+            f"✅ [Админ] Доступ открыт без оплаты.\n\n{payment_text}",
+            reply_markup=kb.get_member_keyboard(MANAGER_LINK, invite_link=invite_link)
         )
         await callback.answer()
         return

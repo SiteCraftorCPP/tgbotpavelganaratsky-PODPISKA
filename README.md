@@ -19,6 +19,7 @@ python bot.py
 BOT_TOKEN=...
 ADMIN_IDS=6933111964,783321437,6804220900
 CHANNEL_ID=-1003721182699
+CHANNEL_INVITE_LINK=https://t.me/+DxKiacUx8M9mMjBi
 MANAGER_LINK=https://t.me/nastyaprostozhit
 BOT_LINK=https://t.me/n_deniseva_bot
 ```
